@@ -1,0 +1,158 @@
+
+
+##Diffusion MRI- FMRIB's Diffusion Toolbox (FDT) 
+## Masoud Lotfalipour 
+---------------------------------------------------------
+---------------------------------------------------------
+#1. Data Preparation
+
+
+# Navigate to the directory of the file
+% cd /home/Desktop/masoud/Desktop/CON02/dwi
+
+# Looking  at the data
+
+#Reading the Header
+% fslinfo sub-CON02_ses-preop_acq-AP_dwi.nii.gz
+
+#Number of bval and number of bvec
+% awk '{print NF; exit}' sub-Con02_ses-preop_acq-AP_dwi.bvec
+102
+% awk '{print NF; exit}' sub-CON02_ses-preop_acq-AP_dwi.bval
+102
+
+# Looking at the data using fsleyes
+% fsleyes sub-CON02_ses-preop_acq-AP_dwi.nii.gz
+----------------------------------------------------------
+----------------------------------------------------------
+#2. Distortion Correction with Topup
+
+##Topup
+#The first preprocessing step we will do is topup, which is designed to correct distortions caused by magnetic field inhomogeneities. 
+These inhomogeneities are easiest to detect in the images that do not have any diffusion-weighting applied; in other words, the images with a b-value of 0. In this dataset, we have seen that the first volume of the AP and PA datasets both have a b-value of 0. Consequently, we will extract these volumes using the command fslroi:
+
+% fslroi sub-CON02_ses-preop_acq-AP_dwi.nii.gz AP 0 1
+% fslroi sub-CON02_ses-preop_acq-PA_dwi.nii.gz PA 0 1 
+
+#This creates two new files, “AP.nii.gz” and “PA.nii.gz”. We then combine them using fslmerge
+#combine them using
+
+% fslmerge -t AP_PA AP.nii.gz PA.nii.gz
+
+#We will also need to create a file that indicates the phase-encoding direction and the read-out #time. Using a text editor enter these numbers and save it as acq_param.txt:
+0 1 0 0.0266003
+0 -1 0 0.0266003
+#The first three numbers in the first row represent the phase-encoding along the x-, y-, and z-#dimensions. #Since the first volume was acquired in the A-P direction, we place a “1” in the second column.
+
+
+# run topup to estimate the field inhomogeneity:
+% topup --imain=AP_PA.nii.gz --datain=acq_param.txt --config=b02b0.cnf --out=AP_PA_topup
+topup --imain=<some 4D image> --datain=<text file> --config=<text file with parameters> --out=my_topup_results
+
+#apply the inhomogeneity estimation to the original A-P phase-encoded data
+% applytopup --imain=sub-CON02_ses-preop_acq-AP_dwi.nii.gz --inindex=1 --datain=acq_param.txt --topup=AP_PA_topup --method=jac --out=AP_Cor
+
+#After a few minutes, you will see a few new files, including one called AP_PA_topup_fieldcoef.nii.gz. These are the inhomogeneity estimations, which you can view in fsleyes
+
+---------------------------------------------------
+---------------------------------------------------
+#3. Motion and Eddy Current Correction
+
+## eddy
+
+#to run eddy, create two more files: 1. mask of the image that we will use with eddy, which should be based on the corrected dataset that was generated using topup
+# extract the first volume of that dataset using 
+% fslroi AP_Cor.nii.gz AP_1stVol 0 1
+
+#create a mask from this image
+% bet AP_1stVol.nii.gz AP_brain -m -f 0.2
+
+#create a file called index.txt, which contains a 1 for each volume that has the parameters indicated by the first line of the acq_params.txt file. Since we have 102 volumes, we can quickly create and fill a new file called index.txt with that many 1’s by using a for-loop
+% for i in {1..102}; do echo "1" >> index.txt; done
+
+#run eddy
+
+% eddy --imain=sub-CON02_ses-preop_acq-AP_dwi.nii.gz --mask=AP_brain_mask.nii.gz --index=index.txt --acqp=acq_param.txt --bvecs=sub-CON02_ses-preop_acq-AP_dwi.bvec --bvals=sub-CON02_ses-preop_acq-AP_dwi.bval --fwhm=0 --topup=AP_PA_topup --out=AP_eddy_unwarped --data_is_shelled
+
+-------------------------------------------------------------------
+-------------------------------------------------------------------
+#4. Tensor Fitting
+
+##Fitting the Tensors with DTIFIT
+
+%Fdt_gui
+-------------------------------------------------------------------
+-------------------------------------------------------------------
+#5. Tract-Based Spatial Statistics (TBSS)
+
+##TBSS : Preprocessing
+
+#Now that we have unwarped and eddy-corrected the data, we are ready to #fit a tensor at each voxel, representing the direction and the #magnitude of diffusion.
+
+# create a new directory called tbss and then copy the FA image into that directory
+% mkdir tbss
+% cp dti_FA.nii.gz tbss
+% cd tbss
+
+#tbss_1_preproc, will clean up the FA images by removing the brighter voxels around the edges of the brain, and then placing the image into a folder called FA:
+% tbss_1_preproc dti_FA.nii.gz
+
+#register the data to MNI space to calculate the warps needed for the 
+#transforms(With the “-T” option indicating that we will use the FA #template “FMRIB58_FA_1mm”.):
+#With the “-T” option indicating that we will use the FA template “FMRIB58_FA_1mm”.
+
+% tbss_2_reg -T
+
+# apply the warps and bring the FA data to MNI space(The “-S” option will create files called “mean_FA” and “mean_FA_skeleton” based on the mean of all of the subjects that have been analyzed in with the previous steps. Since we only have one subject in this case, it will be the same as the single FA image that we have been processing):
+
+% tbss_3_postreg -S
+
+#You can check the normalization of the FA data by typing the following:
+cd stats
+fsleyes -std1mm mean_FA -cm red-yellow -dr 0.2 0.6 &
+
+----------------------------------------
+----------------------------------------
+#6. Extracting Tract-Specific FA Values
+
+##To extract FA values for the Uncinate Fasciculus, you'll need a mask corresponding to this tract. You can obtain such a mask from:
+
+JHU-ICBM atlas, which is included with FSL.
+The atlas is located in: 
+FSL/data/atlases/JHU/JHU-ICBM-tracts-maxprob-thr0-1mm.nii.gz.
+The associated labels are listed in: 
+FSL/data/atlases/JHU-labels.xml
+-------------------------------
+#create a binary mask for the Uncinate Fasciculus:
+% fslmaths JHU-ICBM-tracts-maxprob-thr0-1mm.nii.gz -thr <tract_label_value> -uthr <tract_label_value> uncin_mask
+replace tract_label_value with the index value ; 
+
+In our example:
+<label index="47" x="55" y="127" z="54">Uncinate fasciculus R</label>
+
+So, 
+% fslmaths JHU-ICBM-tracts-maxprob-thr0-1mm.nii.gz -thr 47 -uthr 47 uncin_mask
+#threshold the mask to include only regions with high probability
+%fslmaths uncin_mask -thr 0.5 -bin uncin_mask_R_bin
+----------------------------------------------------
+#Transform the Mask to Subject Space
+#The JHU atlas is in MNI space. You need to bring the mask into your subject's native #space using the transformations computed during TBSS registration.
+
+%applywarp --ref=<subject_FA> --in=uncin_mask_bin --warp=<warp_file> --out=uncin_mask_subject
+
+Replace:
+<subject_FA>: The subject's FA map (is the input FA map you used when running the TBSS pipeline)
+<warp_file>: The warp file generated during TBSS registration and stored in the FA subdirectory(e.g., FA_to_target_warp.nii.gz)
+
+So:
+% applywarp --ref=dti_FA.nii.gz --in=uncin_mask_bin --warp=dti_FA_FA_to_target_warp.nii.gz --out=uncin_mask_subject
+-----------------------------------------------------
+##Extract FA Values
+#Multiply the binary mask with the subject's FA map to isolate the region:
+%fslmaths <subject_FA> -mas uncin_mask_subject uncin_FA
+#To calculate the mean FA value within the mask:
+%fslstats uncin_FA -M
+#To get other statistics (e.g., standard deviation, min, max, etc.):
+%fslstats uncin_FA -M -S -V
+
+
